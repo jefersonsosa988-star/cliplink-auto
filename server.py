@@ -13,6 +13,7 @@ JOBS_DIR = BASE_DIR / "generated_clips"
 JOBS_DIR.mkdir(exist_ok=True)
 
 app = Flask(__name__, static_folder=str(BASE_DIR))
+app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024  # 500 MB
 
 
 @app.after_request
@@ -61,13 +62,14 @@ def pick_moments(info: dict, duration: float, count: int, clip_len: int = 25) ->
             if len(moments) >= count:
                 break
 
-    if len(moments) < count and duration > 5:
-        step = max(clip_len, duration / (count + 1))
+    if len(moments) < count and duration > 3:
+        actual_len = min(float(clip_len), duration)
+        step = max(actual_len, duration / (count + 1))
         for i in range(count):
-            start = max(0.0, min(duration - clip_len, (i + 1) * step - clip_len / 2.0))
-            end = min(duration, start + min(clip_len, duration))
-            if all(abs(start - s) >= 8 for s, _, _ in moments):
-                moments.append((round(start, 1), round(end, 1), f"Clip automático #{len(moments) + 1}"))
+            start = max(0.0, min(duration - actual_len, (i + 1) * step - actual_len / 2.0))
+            end = min(duration, start + actual_len)
+            if all(abs(start - s) >= max(4.0, actual_len * 0.4) for s, _, _ in moments):
+                moments.append((round(start, 1), round(end, 1), f"Clip #{len(moments) + 1}"))
             if len(moments) >= count:
                 break
 
@@ -100,16 +102,24 @@ def auto_clips():
     if request.method == "OPTIONS":
         return make_response("", 204)
 
-    data = request.get_json(silent=True) or {}
-    url = (data.get("url") or "").strip()
-    count = max(1, min(6, int(data.get("count") or 3)))
-    clip_len = max(10, min(60, int(data.get("clipLen") or 25)))
-    ratio = data.get("ratio") or "9:16"
+    if not shutil.which("ffmpeg"):
+        return jsonify({"error": "Falta instalar ffmpeg en el servidor."}), 500
 
-    if not url:
-        return jsonify({"error": "Pega un enlace de video válido."}), 400
-    if not shutil.which("yt-dlp") or not shutil.which("ffmpeg"):
-        return jsonify({"error": "Falta instalar yt-dlp o ffmpeg en tu equipo."}), 500
+    uploaded_file = request.files.get("file")
+    if uploaded_file:
+        count = max(1, min(6, int(request.form.get("count") or 3)))
+        clip_len = max(10, min(60, int(request.form.get("clipLen") or 25)))
+        ratio = request.form.get("ratio") or "9:16"
+        url = ""
+    else:
+        data = request.get_json(silent=True) or {}
+        url = (data.get("url") or "").strip()
+        count = max(1, min(6, int(data.get("count") or 3)))
+        clip_len = max(10, min(60, int(data.get("clipLen") or 25)))
+        ratio = data.get("ratio") or "9:16"
+
+    if not uploaded_file and not url:
+        return jsonify({"error": "Sube un archivo de video o pega un enlace válido."}), 400
 
     job_id = uuid.uuid4().hex[:8]
     out_dir = JOBS_DIR / job_id
@@ -118,32 +128,42 @@ def auto_clips():
     raw_path = os.path.join(tmp_dir, "source.mp4")
 
     try:
-        info_proc = subprocess.run(
-            ["yt-dlp", "--dump-json", "--no-playlist", url],
-            capture_output=True,
-            text=True,
-            timeout=45,
-            check=True,
-        )
-        info = json.loads(info_proc.stdout.splitlines()[0])
+        info = {}
+        video_title = "Tu video"
 
-        subprocess.run(
-            [
-                "yt-dlp",
-                "--no-playlist",
-                "-f",
-                "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-                "--merge-output-format",
-                "mp4",
-                "-o",
-                raw_path,
-                url,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=300,
-            check=True,
-        )
+        if uploaded_file:
+            uploaded_file.save(raw_path)
+            video_title = os.path.splitext(uploaded_file.filename or "Video subido")[0]
+        else:
+            if not shutil.which("yt-dlp"):
+                return jsonify({"error": "Falta instalar yt-dlp en el servidor."}), 500
+            info_proc = subprocess.run(
+                ["yt-dlp", "--dump-json", "--no-playlist", url],
+                capture_output=True,
+                text=True,
+                timeout=45,
+                check=True,
+            )
+            info = json.loads(info_proc.stdout.splitlines()[0])
+            video_title = info.get("title") or "Video"
+
+            subprocess.run(
+                [
+                    "yt-dlp",
+                    "--no-playlist",
+                    "-f",
+                    "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+                    "--merge-output-format",
+                    "mp4",
+                    "-o",
+                    raw_path,
+                    url,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=300,
+                check=True,
+            )
 
         duration = get_duration(raw_path)
         moments = pick_moments(info, duration, count, clip_len)
@@ -190,7 +210,7 @@ def auto_clips():
             })
 
         return jsonify({
-            "videoTitle": info.get("title") or "Video",
+            "videoTitle": video_title,
             "clips": results,
         })
     except subprocess.CalledProcessError as exc:
