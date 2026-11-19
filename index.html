@@ -130,8 +130,12 @@
           });
         }
 
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Error procesando el video');
+        const rawText = await res.text();
+        let data = {};
+        try { data = rawText ? JSON.parse(rawText) : {}; } catch {}
+        if (!res.ok) {
+          throw new Error(data.error || `El servidor tardó demasiado o se quedó sin memoria (HTTP ${res.status}). Prueba con un video más corto o elige 15s.`);
+        }
 
         statusMsg.textContent = `¡Listo! Se generaron ${data.clips.length} clips de "${data.videoTitle}"`;
         data.clips.forEach((clip) => {

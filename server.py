@@ -168,7 +168,7 @@ def auto_clips():
         duration = get_duration(raw_path)
         moments = pick_moments(info, duration, count, clip_len)
 
-        vf = "crop=ih*9/16:ih:(iw-ih*9/16)*0.5:0,scale=1080:1920" if ratio == "9:16" else "scale=1920:1080"
+        vf = "crop=ih*9/16:ih:(iw-ih*9/16)*0.5:0,scale=720:1280" if ratio == "9:16" else "scale=1280:720"
         results = []
 
         for idx, (start, end, label) in enumerate(moments, start=1):
@@ -189,9 +189,11 @@ def auto_clips():
                     "-c:v",
                     "libx264",
                     "-preset",
-                    "veryfast",
+                    "ultrafast",
+                    "-threads",
+                    "1",
                     "-crf",
-                    "23",
+                    "25",
                     "-c:a",
                     "aac",
                     str(out_file),
